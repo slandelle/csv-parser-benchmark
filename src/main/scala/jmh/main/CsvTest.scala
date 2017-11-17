@@ -1,12 +1,12 @@
 package jmh.main
 
-import java.io.{File, FileReader}
-import java.util.{Map => JMap}
+import java.io.{File, FileInputStream, InputStreamReader}
+import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
+import java.util.{Iterator => JIterator}
 
 import org.openjdk.jmh.annotations._
 import org.openjdk.jmh.infra.Blackhole
-
 
 @OutputTimeUnit(TimeUnit.MILLISECONDS)
 @BenchmarkMode(Array(Mode.AverageTime))
@@ -17,27 +17,18 @@ abstract class CsvText {
   var fileName: String = _
 
   protected def csvFile: File = new File("/Users/slandelle/Documents/dev/csv-samples", fileName)
-}
 
-object JacksonTest {
-  import com.fasterxml.jackson.databind.MapperFeature
-  import com.fasterxml.jackson.dataformat.csv.{CsvSchema, CsvMapper => JacksonMapper}
-
-  val Mapper = new JacksonMapper().disable(MapperFeature.SORT_PROPERTIES_ALPHABETICALLY)
-  val Schema = CsvSchema.emptySchema().withHeader().withColumnSeparator(',').withQuoteChar('"')
-}
-
-class JacksonTest extends CsvText {
-  import JacksonTest._
+  protected def readValues(reader: InputStreamReader): JIterator[Array[String]]
 
   @Benchmark
   def read(bh: Blackhole): Unit = {
-    val objectReader = Mapper.readerFor(classOf[JMap[_, _]]).`with`(Schema)
-    val reader = new FileReader(csvFile)
+    val reader = new InputStreamReader(new FileInputStream(csvFile), StandardCharsets.UTF_8)
     try {
-      val it = objectReader.readValues(reader)
+      val it = readValues(reader)
+      val headers = it.next()
       while (it.hasNext) {
-        bh.consume(it.next().asInstanceOf[Object])
+        val values = it.next()
+        bh.consume(Map.empty ++ ArrayBasedMap(headers, values))
       }
     } finally {
       reader.close()
@@ -45,25 +36,39 @@ class JacksonTest extends CsvText {
   }
 }
 
+object JacksonTest {
+
+  import com.fasterxml.jackson.databind.MapperFeature
+  import com.fasterxml.jackson.dataformat.csv.{CsvSchema, CsvMapper => JacksonMapper, CsvParser => JacksonCsvParser}
+
+  private val objectReader = {
+    val mapper = new JacksonMapper()
+      .enable(JacksonCsvParser.Feature.WRAP_AS_ARRAY)
+      .disable(MapperFeature.SORT_PROPERTIES_ALPHABETICALLY)
+    val schema = CsvSchema.emptySchema.withColumnSeparator(',').withQuoteChar('"')
+    mapper.readerFor(classOf[Array[String]]).`with`(schema)
+  }
+}
+
+class JacksonTest extends CsvText {
+
+  import JacksonTest._
+
+  override protected def readValues(reader: InputStreamReader): JIterator[Array[String]] =
+    objectReader.readValues(reader)
+}
+
 object SfmTest {
+
   import org.simpleflatmapper.csv.CsvParser
-  private val MapToDSL = CsvParser.separator(',').quote('"').disableUnescaping.mapTo(classOf[JMap[_, _]])
+
+  private val dsl = CsvParser.separator(',').quote('"')//.disableUnescaping
 }
 
 class SfmTest extends CsvText {
 
   import SfmTest._
 
-  @Benchmark
-  def read(bh: Blackhole): Unit = {
-    val reader = new FileReader(csvFile)
-    try {
-      val it = MapToDSL.iterator(reader)
-      while (it.hasNext) {
-        bh.consume(it.next().asInstanceOf[Object])
-      }
-    } finally {
-      reader.close()
-    }
-  }
+  override protected def readValues(reader: InputStreamReader): JIterator[Array[String]] =
+    dsl.iterator(reader)
 }
